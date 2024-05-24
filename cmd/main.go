@@ -2,18 +2,16 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
-	"github.com/go-redis/redis/v8"
 	"github.com/mateus-sousa/fc-rate-limiter/internal/config"
+	"github.com/mateus-sousa/fc-rate-limiter/internal/infra"
 	"github.com/mateus-sousa/fc-rate-limiter/internal/repository"
+	"github.com/mateus-sousa/fc-rate-limiter/pkg"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
-	"time"
 )
 
 var limiterConfigRepository repository.LimiterConfigRepository
@@ -26,22 +24,20 @@ func main() {
 	var err error
 	cfg, err = config.LoadConfig(".")
 	if err != nil {
+		panic(err)
 		return
 	}
-	client := redis.NewClient(&redis.Options{
-		Addr:     "redis:6379",
-		Password: "",
-		DB:       0,
-	})
-	_, err = client.Ping(context.Background()).Result()
+	ctx := context.Background()
+	client, err := infra.GetRedisClient(ctx)
 	if err != nil {
 		panic(err)
 		return
 	}
 	limiterConfigRepository = repository.NewLimiterConfigCacheRepository(client)
+	rateLimiter := pkg.NewRateLimiter(limiterConfigRepository, cfg)
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
-	r.Use(rateLimiterMiddleware)
+	r.Use(rateLimiter.RateLimiterMiddleware)
 	r.Get("/hello-world", helloWorld)
 	go func() {
 		http.ListenAndServe(":8080", r)
@@ -50,124 +46,7 @@ func main() {
 	client.FlushDB(context.Background())
 }
 
-func rateLimiterMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		now := time.Now()
-		var requestRuleKey string
-		requestRuleKey = readUserIP(r)
-		ruleTime := cfg.ReqPerSecondsIP
-		token := r.Header.Get("API_KEY")
-		blockedTime := time.Duration(cfg.BlockedTimeIP) * time.Second
-		if token != "" {
-			requestRuleKey = token
-			ruleTime = cfg.ReqPerSecondsToken
-			blockedTime = time.Duration(cfg.BlockedTimeToken) * time.Second
-		}
-		val, err := limiterConfigRepository.GetRequestsBy(r.Context(), requestRuleKey)
-		if err != nil && err.Error() != "redis: nil" {
-			panic(err)
-		}
-		if val == "" {
-			limiterConfig := repository.LimiterConfig{
-				FirstRequestTime:      now,
-				AmountRequestInSecond: 1,
-				Blocked:               false,
-			}
-			limiterConfigJson, err := json.Marshal(&limiterConfig)
-			if err != nil {
-				panic(err)
-			}
-			err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
-			if err != nil {
-				panic(err)
-			}
-			next.ServeHTTP(w, r)
-			return
-		}
-		var storedLimiterConfig repository.LimiterConfig
-		err = json.Unmarshal([]byte(val), &storedLimiterConfig)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		reqDiff := now.Sub(storedLimiterConfig.FirstRequestTime)
-		if storedLimiterConfig.AmountRequestInSecond < ruleTime && reqDiff < time.Second {
-			limiterConfig := repository.LimiterConfig{
-				FirstRequestTime:      storedLimiterConfig.FirstRequestTime,
-				AmountRequestInSecond: storedLimiterConfig.AmountRequestInSecond + 1,
-			}
-			limiterConfigJson, err := json.Marshal(&limiterConfig)
-			if err != nil {
-				panic(err)
-			}
-			err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
-			if err != nil {
-				panic(err)
-			}
-			next.ServeHTTP(w, r)
-			return
-		}
-		blockedDiff := now.Sub(storedLimiterConfig.BlockedTime)
-		if storedLimiterConfig.AmountRequestInSecond >= ruleTime && reqDiff < time.Second || (storedLimiterConfig.Blocked == true && blockedDiff < blockedTime) {
-			limiterConfig := repository.LimiterConfig{
-				FirstRequestTime:      storedLimiterConfig.FirstRequestTime,
-				AmountRequestInSecond: storedLimiterConfig.AmountRequestInSecond + 1,
-				Blocked:               true,
-				BlockedTime:           now,
-			}
-			if storedLimiterConfig.Blocked == true {
-				limiterConfig.BlockedTime = storedLimiterConfig.BlockedTime
-			}
-			limiterConfigJson, err := json.Marshal(&limiterConfig)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte("you have reached the maximum number of requests or actions allowed within a certain time frame"))
-			return
-		}
-		if reqDiff >= time.Second && (storedLimiterConfig.Blocked == false || (storedLimiterConfig.Blocked == true && blockedDiff > blockedTime)) {
-			limiterConfig := repository.LimiterConfig{
-				FirstRequestTime:      now,
-				AmountRequestInSecond: 1,
-				Blocked:               false,
-			}
-			limiterConfigJson, err := json.Marshal(&limiterConfig)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			next.ServeHTTP(w, r)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func helloWorld(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Hello World"))
-}
-
-func readUserIP(r *http.Request) string {
-	IPAddress := r.Header.Get("X-Real-Ip")
-	if IPAddress == "" {
-		IPAddress = r.Header.Get("X-Forwarded-For")
-	}
-	if IPAddress == "" {
-		IPAddress = r.RemoteAddr
-	}
-	auxIP := strings.Split(IPAddress, ":")
-	return auxIP[0]
 }
