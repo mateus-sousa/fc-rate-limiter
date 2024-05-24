@@ -9,14 +9,22 @@ import (
 	"github.com/mateus-sousa/fc-rate-limiter/internal/config"
 	"github.com/mateus-sousa/fc-rate-limiter/internal/repository"
 	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
 var limiterConfigRepository repository.LimiterConfigRepository
 
 var cfg *config.Conf
+var m sync.Mutex
 
 func main() {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT)
 	var err error
 	cfg, err = config.LoadConfig(".")
 	if err != nil {
@@ -27,22 +35,25 @@ func main() {
 		Password: "",
 		DB:       0,
 	})
-	ping, err := client.Ping(context.Background()).Result()
+	_, err = client.Ping(context.Background()).Result()
 	if err != nil {
 		panic(err)
 		return
 	}
-	fmt.Println(ping)
-	fmt.Println(client)
 	limiterConfigRepository = repository.NewLimiterConfigCacheRepository(client)
+	m = sync.Mutex{}
 	r := chi.NewRouter()
 	r.Get("/hello-world", helloWorld)
 	fmt.Println("listening in port :8080")
-	http.ListenAndServe(":8080", r)
+	fmt.Println(cfg.ReqPerSecondsIP)
+	go func() {
+		http.ListenAndServe(":8080", r)
+	}()
+	<-sigCh
+	client.FlushDB(context.Background())
 }
 
 func helloWorld(w http.ResponseWriter, r *http.Request) {
-
 	now := time.Now()
 	var requestRuleKey string
 	requestRuleKey = readUserIP(r)
@@ -52,12 +63,11 @@ func helloWorld(w http.ResponseWriter, r *http.Request) {
 		requestRuleKey = token
 		ruleTime = cfg.ReqPerSecondsToken
 	}
+	m.Lock()
 	val, err := limiterConfigRepository.GetRequestsBy(r.Context(), requestRuleKey)
 	if err != nil && err.Error() != "redis: nil" {
 		panic(err)
 	}
-	fmt.Println("val")
-	fmt.Println(val)
 	limiterConfig := repository.LimiterConfig{
 		FirstRequestTime:      now,
 		AmountRequestInSecond: 1,
@@ -69,13 +79,14 @@ func helloWorld(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			panic(err)
 		}
-		if storedLimiterConfig.AmountRequestInSecond >= ruleTime {
+		reqDiff := now.Sub(storedLimiterConfig.FirstRequestTime)
+		if storedLimiterConfig.AmountRequestInSecond >= ruleTime && reqDiff < time.Second {
 			fmt.Println(http.StatusTooManyRequests)
 			w.WriteHeader(http.StatusTooManyRequests)
+			m.Unlock()
 			return
 		}
-		reqDiff := now.Sub(storedLimiterConfig.FirstRequestTime)
-		if reqDiff < time.Minute {
+		if reqDiff < time.Second {
 			limiterConfig.FirstRequestTime = storedLimiterConfig.FirstRequestTime
 			limiterConfig.AmountRequestInSecond = storedLimiterConfig.AmountRequestInSecond + 1
 		}
@@ -88,6 +99,7 @@ func helloWorld(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		panic(err)
 	}
+	m.Unlock()
 	fmt.Println(http.StatusOK)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(requestRuleKey))
@@ -101,5 +113,6 @@ func readUserIP(r *http.Request) string {
 	if IPAddress == "" {
 		IPAddress = r.RemoteAddr
 	}
-	return IPAddress
+	auxIP := strings.Split(IPAddress, ":")
+	return auxIP[0]
 }
