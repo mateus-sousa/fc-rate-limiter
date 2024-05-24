@@ -46,6 +46,7 @@ func main() {
 	r.Get("/hello-world", helloWorld)
 	fmt.Println("listening in port :8080")
 	fmt.Println(cfg.ReqPerSecondsIP)
+	fmt.Println(cfg.BlockedTimeIP)
 	go func() {
 		http.ListenAndServe(":8080", r)
 	}()
@@ -59,50 +60,87 @@ func helloWorld(w http.ResponseWriter, r *http.Request) {
 	requestRuleKey = readUserIP(r)
 	ruleTime := cfg.ReqPerSecondsIP
 	token := r.Header.Get("API_KEY")
+	//blockedTime := cfg.BlockedTimeIP
 	if token != "" {
 		requestRuleKey = token
 		ruleTime = cfg.ReqPerSecondsToken
+		//blockedTime = cfg.BlockedTimeToken
 	}
 	m.Lock()
 	val, err := limiterConfigRepository.GetRequestsBy(r.Context(), requestRuleKey)
 	if err != nil && err.Error() != "redis: nil" {
 		panic(err)
 	}
-	limiterConfig := repository.LimiterConfig{
-		FirstRequestTime:      now,
-		AmountRequestInSecond: 1,
-	}
-	if val != "" {
-		fmt.Println(val)
-		var storedLimiterConfig repository.LimiterConfig
-		err = json.Unmarshal([]byte(val), &storedLimiterConfig)
+	if val == "" {
+		limiterConfig := repository.LimiterConfig{
+			FirstRequestTime:      now,
+			AmountRequestInSecond: 1,
+		}
+		limiterConfigJson, err := json.Marshal(&limiterConfig)
 		if err != nil {
 			panic(err)
 		}
-		reqDiff := now.Sub(storedLimiterConfig.FirstRequestTime)
-		if storedLimiterConfig.AmountRequestInSecond >= ruleTime && reqDiff < time.Second {
-			fmt.Println(http.StatusTooManyRequests)
-			w.WriteHeader(http.StatusTooManyRequests)
-			m.Unlock()
-			return
+		err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
+		if err != nil {
+			panic(err)
 		}
-		if reqDiff < time.Second {
-			limiterConfig.FirstRequestTime = storedLimiterConfig.FirstRequestTime
-			limiterConfig.AmountRequestInSecond = storedLimiterConfig.AmountRequestInSecond + 1
+		m.Unlock()
+		fmt.Println(http.StatusOK)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(requestRuleKey))
+		return
+	}
+	var storedLimiterConfig repository.LimiterConfig
+	err = json.Unmarshal([]byte(val), &storedLimiterConfig)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	reqDiff := now.Sub(storedLimiterConfig.FirstRequestTime)
+	if storedLimiterConfig.AmountRequestInSecond >= ruleTime && reqDiff < time.Second {
+		fmt.Println(http.StatusTooManyRequests)
+		w.WriteHeader(http.StatusTooManyRequests)
+		m.Unlock()
+		return
+	}
+	if storedLimiterConfig.AmountRequestInSecond < ruleTime && reqDiff < time.Second {
+		limiterConfig := repository.LimiterConfig{
+			FirstRequestTime:      storedLimiterConfig.FirstRequestTime,
+			AmountRequestInSecond: storedLimiterConfig.AmountRequestInSecond + 1,
 		}
+		limiterConfigJson, err := json.Marshal(&limiterConfig)
+		if err != nil {
+			panic(err)
+		}
+		err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
+		if err != nil {
+			panic(err)
+		}
+		m.Unlock()
+		fmt.Println(http.StatusOK)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(requestRuleKey))
+		return
 	}
-	limiterConfigJson, err := json.Marshal(&limiterConfig)
-	if err != nil {
-		panic(err)
+	if reqDiff >= time.Second {
+		limiterConfig := repository.LimiterConfig{
+			FirstRequestTime:      now,
+			AmountRequestInSecond: 1,
+		}
+		limiterConfigJson, err := json.Marshal(&limiterConfig)
+		if err != nil {
+			panic(err)
+		}
+		err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
+		if err != nil {
+			panic(err)
+		}
+		m.Unlock()
+		fmt.Println(http.StatusOK)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(requestRuleKey))
+		return
 	}
-	err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
-	if err != nil {
-		panic(err)
-	}
-	m.Unlock()
-	fmt.Println(http.StatusOK)
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(requestRuleKey))
 }
 
 func readUserIP(r *http.Request) string {

@@ -7,6 +7,8 @@ import (
 type Conf struct {
 	ReqPerSecondsToken int `mapstructure:"REQ_PER_SEC_TOKEN"`
 	ReqPerSecondsIP    int `mapstructure:"REQ_PER_SEC_IP"`
+	BlockedTimeToken   int `mapstructure:"BLOCKED_TIME_TOKEN"`
+	BlockedTimeIP      int `mapstructure:"BLOCKED_TIME_IP"`
 }
 
 func LoadConfig(path string) (*Conf, error) {
