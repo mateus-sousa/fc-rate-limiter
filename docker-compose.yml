@@ -1,0 +1,13 @@
+version: "3"
+services:
+  goapp:
+    depends_on:
+      - redis
+    ports:
+      - "8080:8080"
+    build:
+      context: .
+  redis:
+    image: redis:7.2
+    ports:
+      - "6379:6379"

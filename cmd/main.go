@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/middleware"
 	"github.com/go-redis/redis/v8"
 	"github.com/mateus-sousa/fc-rate-limiter/internal/config"
 	"github.com/mateus-sousa/fc-rate-limiter/internal/repository"
@@ -29,7 +29,7 @@ func main() {
 		return
 	}
 	client := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
+		Addr:     "redis:6379",
 		Password: "",
 		DB:       0,
 	})
@@ -40,11 +40,9 @@ func main() {
 	}
 	limiterConfigRepository = repository.NewLimiterConfigCacheRepository(client)
 	r := chi.NewRouter()
+	r.Use(middleware.Logger)
 	r.Use(rateLimiterMiddleware)
 	r.Get("/hello-world", helloWorld)
-	fmt.Println("listening in port :8080")
-	fmt.Println(cfg.ReqPerSecondsIP)
-	fmt.Println(cfg.BlockedTimeIP)
 	go func() {
 		http.ListenAndServe(":8080", r)
 	}()
@@ -83,7 +81,6 @@ func rateLimiterMiddleware(next http.Handler) http.Handler {
 			if err != nil {
 				panic(err)
 			}
-			fmt.Println("PERA LA")
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -123,13 +120,16 @@ func rateLimiterMiddleware(next http.Handler) http.Handler {
 			}
 			limiterConfigJson, err := json.Marshal(&limiterConfig)
 			if err != nil {
-				panic(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
 			}
 			err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
 			if err != nil {
-				panic(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
 			}
 			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte("you have reached the maximum number of requests or actions allowed within a certain time frame"))
 			return
 		}
 		if reqDiff >= time.Second && (storedLimiterConfig.Blocked == false || (storedLimiterConfig.Blocked == true && blockedDiff > blockedTime)) {
@@ -140,11 +140,13 @@ func rateLimiterMiddleware(next http.Handler) http.Handler {
 			}
 			limiterConfigJson, err := json.Marshal(&limiterConfig)
 			if err != nil {
-				panic(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
 			}
 			err = limiterConfigRepository.SetRequestsAmount(r.Context(), requestRuleKey, limiterConfigJson)
 			if err != nil {
-				panic(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
 			}
 			next.ServeHTTP(w, r)
 			return

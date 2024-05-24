@@ -81,7 +81,6 @@ func TestRateLimiterWithToken(t *testing.T) {
 		assert.Equal(t, res.StatusCode, http.StatusTooManyRequests)
 	}
 	time.Sleep(time.Second)
-
 	req, err := http.NewRequest("GET", "http://localhost:8080/hello-world", nil)
 	if err != nil {
 		assert.Nil(t, err)
@@ -92,7 +91,6 @@ func TestRateLimiterWithToken(t *testing.T) {
 		assert.Nil(t, err)
 	}
 	assert.Equal(t, res.StatusCode, http.StatusTooManyRequests)
-
 	time.Sleep(2 * time.Second)
 	req, err = http.NewRequest("GET", "http://localhost:8080/hello-world", nil)
 	if err != nil {
