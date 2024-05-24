@@ -9,6 +9,8 @@ import (
 type LimiterConfig struct {
 	FirstRequestTime      time.Time `json:"first_request_time"`
 	AmountRequestInSecond int       `json:"amount_request_in_second"`
+	Blocked               bool      `json:"blocked"`
+	BlockedTime           time.Time `json:"blocked_time"`
 }
 
 type LimiterConfigRepository interface {
