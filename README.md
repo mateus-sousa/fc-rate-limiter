@@ -6,7 +6,7 @@ Passo a passo para execução da aplicação:
 ```
 A aplicação estará de pé respondendo na porta: 8080
 
-1. Testes:
+### 1. Testes:
    * Há 2 testes em nossa pilha, 
    * O primeiro teste é baseado em IP (limite de requisições: 10, tempo de bloqueio 2s).
      * Envia 10 requisições recebendo response status code 200.
@@ -23,7 +23,7 @@ A aplicação estará de pé respondendo na porta: 8080
      * Executa sleep de 2 segundo.
      * Envia 1 requisição recebendo response status code 200.
 
-2. Rodando de testes:
+### 2. Rodando de testes:
     * Com o ambiente e as dependencias em pé, execute o comando para entrar no container da aplicação:
 ```
    docker-compose exec goapp bash
